@@ -1,0 +1,548 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_Engine_Expression_Tag
+ * @since 2006-08-12
+ * @version 2007-02-05
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+/**
+ * @access private
+ */
+class CTE_Engine_Expression_Tag_Foreach
+  extends CTE_Engine_Expression_Tag_Abstract
+    implements CTE_Engine_Expression_Compilable_Interface,
+               CTE_Engine_Parser_Tag_Handler_Interface,
+               CTE_Engine_Process_Creator_Interface
+{
+  /**
+   * Attribute Expected
+   * 
+   * An attribute is expected but not set yet.
+   */  
+  const ATTR_EXPECTED = 1;
+  
+  /**
+   * Attribute OK
+   * 
+   * The attribute has either been set or isn't required anymore.
+   */
+  const ATTR_OK = 2;
+  
+  /**
+   * Regex for user-defined ID's. Ignore case is assumed.
+   * 
+   * @var string
+   */
+  private static $idRegex = '(?:[a-z_][a-z0-9_]*)';
+  
+  /**
+   * Array with used foreach ID's. The ID's will be categorized by template
+   * process ID.
+   * 
+   * @var array
+   */
+  private static $activeIds = array();
+  
+  /**
+   * True if foreach block had a foreachelse statement.
+   * 
+   * @var bool
+   */
+  private $hadElse = false;
+  
+  /**
+   * The ID of template process in which this foreach block occurs.
+   * 
+   * @var int
+   */
+  private $templateId;
+  
+  /**
+   * Valid attribute expression instances. It is assumed that all of them are
+   * implementing the Evaluable Interface.
+   * 
+   * @var aArray
+   */
+  private static $validValues = array(
+    'source' => array(
+      'CTE_Engine_Expression_Variable' => true,
+      'CTE_Engine_Expression_Resource' => true
+    ),
+    'id' => array(
+      'CTE_Engine_Expression_Literal_String' => true,
+      'CTE_Engine_Expression_Literal_ParseableString' => true
+    ),
+    'item' => array(
+      'CTE_Engine_Expression_Literal_String' => true,
+      'CTE_Engine_Expression_Literal_ParseableString' => true
+    ),
+    'key' => array(
+      'CTE_Engine_Expression_Literal_String' => true,
+      'CTE_Engine_Expression_Literal_ParseableString' => true
+    ),
+    'enable' => array(
+      'CTE_Engine_Expression_Literal_String' => true,
+      'CTE_Engine_Expression_Literal_ParseableString' => true
+    )
+  );
+  
+  /**
+   * Process for current foreach block.
+   * 
+   * @var CTE_Engine_Process_Abstract
+   */
+  private $process;
+  
+  /**
+   * Whether we had a close tag or not.
+   * 
+   * @var bool
+   */
+  private $isClosed = false;
+  
+  /**
+   * Variable Expression object representing the current foreach system
+   * variable, which might look like: $this->foreach[id]. If no id is set, no
+   * foreach variable will be created.
+   * 
+   * @var CTE_Engine_Expression_Variable
+   */
+  private $foreachSysVar = null;
+  
+  /**
+   * The key variable found in a foreach statement (key=>value). This will only
+   * be set if we get a key attribute.
+   * 
+   * @var CTE_Engine_Expression_Variable
+   */
+  private $foreachKeyVar = null;
+  
+  /**
+   * The value variable found in a foreach statement (key=>value). This will
+   * only be set if we get an item attribute.
+   * 
+   * @var CTE_Engine_Expression_Variable
+   */
+  private $foreachValueVar = null;
+  
+  /**
+   * ATTRIBUTE: source
+   * 
+   * @var CTE_Engine_Expression_Abstract
+   */
+  private $attr_source = null;
+  
+  /**
+   * ATTRIBUTE: id
+   * 
+   * @var CTE_Engine_Expression_Abstract
+   */
+  private $attr_id = null;
+  
+  /**
+   * ATTRIBUTE: item
+   * 
+   * Default will be set to 'value', although if no item-attribute is sent the
+   * item name 'value' will not be available as a shortcut, i.e. {$value}. The
+   * only way to access value variable will be through the system foreach
+   * variable, using the foreach id, i.e. {$cte.foreach.fid.value}.
+   * 
+   * @var CTE_Engine_Expression_Abstract
+   */
+  private $attr_item = 'value';
+
+  /**
+   * ATTRIBUTE: key
+   * 
+   * @var CTE_Engine_Expression_Abstract
+   */
+  private $attr_key = null;
+  
+  /**
+   * ATTRIBUTE: enable
+   * 
+   * System variable properties to make available.
+   * 
+   * @var array
+   */
+  private $attr_enable = array();
+  
+  /**
+   * Required attributes tracker.
+   * 
+   * @var aArray
+   */
+  private $reqAttrsTracker = array('source' => self::ATTR_EXPECTED,
+                                   'item'   => self::ATTR_EXPECTED,
+                                   'id'     => self::ATTR_EXPECTED);
+  
+  /**
+   * @see CTE_Engine_Expression_Abstract::requestInstance()
+   */
+  public static function requestInstance(CTE_Engine_Parser_Tag $tagParser)
+  {
+    if ($tagParser->beginsWith('foreach')) {
+      self::tokenizeTag($tagParser);
+      return new self($tagParser);
+    } else {
+      return null;
+    }
+  }
+
+  /**
+   * @param CTE_Engine_Parser_Tag $tagParser
+   */
+  private function __construct(CTE_Engine_Parser_Tag $tagParser)
+  {
+    $this->setLineNum($tagParser->getTemplateLineNum());
+    
+    // Jump past tag name (foreach):
+    $this->nextIdentifier($tagParser);
+    
+    // Get environment instance:
+    $env = CTE_Engine_Environment::getInstance();
+    
+    // Enter a new block process and save it (so we know what to exit later):
+    $this->process = $env->getProcessManager()->enterProcess($this, 'Block');
+    
+    // Register ourselves as a tag parser handler:
+    $env->getCompiler()->registerTagParserHandler($this);
+    
+    // Store ID of current template process:
+    $this->templateId = $env->getProcessManager()->
+                              getCurrentTemplateProcess()->
+                              getId();
+    
+    $attrs = $this->parseAttrs($tagParser);
+    
+    // Validate and store attribute list:
+    foreach ($attrs as $name => $value) {
+      
+      // Validate current attribute value type:
+      if (isset(self::$validValues[$name]) &&
+          !isset(self::$validValues[$name][get_class($value)])) {
+        throw new CTE_Engine_Template_Contextual_Exception(
+          $this,
+          "invalid value for $name attribute"
+        );
+      }
+      
+      switch ($name) {
+        case 'id':
+        
+          // We don't require item-attribute anymore (since it can be accessed
+          // by the ID in the foreach system var):
+          $this->reqAttrsTracker['item'] = self::ATTR_OK;
+          
+          // Mark this attribute as OK:
+          $this->reqAttrsTracker['id'] = self::ATTR_OK;
+          
+          // Set raw value:
+          $this->attr_id = $value->evaluate(false);
+          
+          // Make sure the id matches regex for user defined id's:
+          if (!preg_match('/^' . self::$idRegex . '$/i', $this->attr_id)) {
+            throw new CTE_Engine_Template_Parsing_Exception(
+              $this,
+              "invalid id: {$this->attr_id}"
+            );
+          }
+          
+          // Register ID use:
+          $this->registerId($this->attr_id);
+          break;
+        
+        case 'key':
+        
+          // Store attribute:
+          $this->attr_key = $value->evaluate(false);
+          break;
+          
+        case 'item':
+        
+          // We don't require id-attribute anymore:
+          $this->reqAttrsTracker['id'] = self::ATTR_OK;
+          
+          // Mark this attribute as OK:
+          $this->reqAttrsTracker['item'] = self::ATTR_OK;
+          
+          // Store attribute:
+          $this->attr_item = $value->evaluate(false);
+          break;
+        
+        case 'source':
+        
+          // Mark this attribute as OK:
+          $this->reqAttrsTracker['source'] = self::ATTR_OK;
+        
+          // Store attribute:
+          $this->attr_source = $value->compile();
+          break;
+        
+        case 'enable':
+          $this->attr_enable = explode(',', $value->evaluate(false));
+          break;
+          
+        default:
+          throw new CTE_Engine_Template_Contextual_Exception(
+            $this,
+            "unknown attribute: $name"
+          );
+      }
+    }
+    
+    // Make sure all required attributes are set:
+    foreach ($this->reqAttrsTracker as $attrName => $attrStatus) {
+      if ($attrStatus == self::ATTR_EXPECTED) {
+        throw new CTE_Engine_Template_Contextual_Exception(
+          $this,
+          "missing attribute: $attrName"
+        );
+      }
+    }
+    
+    // Set variable aliases in variable registry (it is important to do this
+    // after the parsing above, so we don't make it legal to use the aliases
+    // in the foreach tag).
+    
+    $varReg = CTE_Engine_Environment::getInstance()->getVariableRegistry();
+    
+    // Generate an internal ID if we didn't get any user defined:
+    if (is_null($this->attr_id)) {
+      $this->attr_id = $this->process->getId();
+    }
+    
+    // Create foreach system variable:
+    $this->foreachSysVar = CTE_Engine_Expression_Variable::createInstance(
+      $this->attr_id,
+      CTE_Engine_Expression_Variable::SOURCE_RUNTIME_FOREACH
+    );
+    
+    // Create foreach key variable, if key attribute is set:
+    if (!is_null($this->attr_key)) {
+      $this->foreachKeyVar = CTE_Engine_Expression_Variable::
+        createInstance(
+          $this->attr_id,
+          CTE_Engine_Expression_Variable::SOURCE_RUNTIME_FOREACH
+        );
+      // Place user defined names somewhere safe:
+      $this->foreachKeyVar->addStaticKeyComponent(0);
+      
+      // Add key name key:
+      $this->foreachKeyVar->addStaticKeyComponent($this->attr_key);
+    }
+    
+    // Create foreach value variable:
+    $this->foreachValueVar = CTE_Engine_Expression_Variable::
+      createInstance(
+        $this->attr_id,
+        CTE_Engine_Expression_Variable::SOURCE_RUNTIME_FOREACH
+      );
+    
+    // If item attribute is set to something else than the default value
+    // 'value', it means an user has changed it to whatever he liked to, and
+    // then we want to be sure that the user doesn't overwrite any of our keys,
+    // so we add a 0-key where any user key can be put safely:
+    if ($this->attr_item != 'value') {
+      $this->foreachValueVar->addStaticKeyComponent(0);
+    }
+    
+    // Add item name key:
+    $this->foreachValueVar->addStaticKeyComponent($this->attr_item);
+    
+    // Associate value variable with either a user defined name or the default
+    // 'value':
+    $varReg->associate($this->foreachValueVar, $this->attr_item);
+    
+    // If we have a key, associate it with name found in key attribute:
+    if (!is_null($this->foreachKeyVar)) {
+      $varReg->associate($this->foreachKeyVar, $this->attr_key);
+    }
+    
+    // Notify user about a possibly pointless enabling of system variable
+    // properties while not having specified an id:
+    if ($this->idIsInternal() && isset($this->attr_enable[0])) {
+      throw new CTE_Engine_Template_Contextual_Exception(
+        $this,
+        'setting the enable-attribute is pointless without setting the id-' .
+        'attribute'
+      );
+    }
+  }
+  
+  /**
+   * Returns true if foreach id $fId is available in template with id
+   * $tId.
+   * 
+   * @param int $tId
+   * @param string $fId
+   * @return bool
+   */
+  public static function idIsAvail($tId, $fId)
+  {
+    return isset(self::$activeIds[$tId][$fId]);
+  }
+  
+  /**
+   * Tries to register a foreach ID.
+   * 
+   * @param string $id
+   * @throws CTE_Engine_Template_Exception if id is already in use.
+   * @return void
+   */
+  private function registerId($id)
+  {
+    if (self::idIsAvail($this->templateId, $id)) {
+      throw new CTE_Engine_Template_Exception(
+        $this,
+        "id already in use: $id"
+      );
+    }
+    
+    self::$activeIds[$this->templateId][$id] = true;
+  }
+  
+  /**
+   * Returns true if the foreach ID is internal; i.e. not user defined.
+   * 
+   * @return bool
+   */
+  private function idIsInternal()
+  {
+    return is_numeric($this->attr_id);
+  }
+  
+  /**
+   * Unregisters current foreach ID.
+   * 
+   * @return void
+   */
+  private function unregisterId()
+  {
+    unset(self::$activeIds[$this->templateId][$this->attr_id]);
+  }
+  
+  /**
+   * @see CTE_Engine_Process_Creator_Interface::notifyProcessUpdated()
+   */
+  public function notifyProcessUpdated(CTE_Engine_Process_Abstract $process)
+  {
+    if (!$this->isClosed && $process->isClosed()) {
+      // We can't close process without an end tag, throw exception:
+      throw new CTE_Engine_Template_Contextual_Exception(
+        $this,
+        'missing end tag'
+      );
+    }
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Abstract::getName()
+   */
+  public function getName()
+  {
+    return 'foreach tag';
+  }
+  
+  /**
+   * Handles end tags.
+   * 
+   * @see CTE_Engine_Parser_Tag_Handler_Interface::CTE_Engine_Parser_Tag()
+   */
+  public function handleTagParser(CTE_Engine_Parser_Tag $tagParser)
+  {
+    if ($tagParser->__toString() == '/foreach') {
+      
+      // We know what it is, skip it:
+      $tagParser->skip();
+    
+      $this->isClosed = true;
+      
+      // Free our ID:
+      $this->unregisterId();
+      
+      $env = CTE_Engine_Environment::getInstance();
+      
+      // Remove association for item alias:
+      $env->getVariableRegistry()->removeAssociation($this->attr_item);
+      
+      // Remove association for key alias, if having key:
+      if (!is_null($this->foreachKeyVar)) {
+        $env->getVariableRegistry()->removeAssociation($this->attr_key);
+      }
+      
+      $compiler = $env->getCompiler();
+
+      // Unregister ourselves from handling tags in compiler:
+      $compiler->unregisterTagParserHandler($this);
+
+      // Close our process:
+      $env->getProcessManager()->leaveProcess($this->process);
+      
+      return $this->wrapPhpCode(($this->hadElse ? '}' : '}}'));
+    } else if ($tagParser->__toString() == 'foreachelse') {
+      
+      // Skip further parsing of the foreachelse tag:
+      $tagParser->skip();
+      
+      $this->hadElse = true;
+      
+      return $this->wrapPhpCode('}}else{');
+    } else {
+      return $tagParser;
+    }
+  }
+  
+  /**
+   * Returns true if system variable property with name $prop is enabled.
+   * 
+   * @param string $prop
+   * @return bool
+   */
+  private function propEnabled($prop)
+  {
+    return in_array($prop, $this->attr_enable);
+  }
+  
+  /**
+   * Compiles the foreach tag into PHP code. This method does not cache
+   * the output right now (070111).
+   * 
+   * @see CTE_Engine_Expression_Compilable_Interface::compile()
+   */
+  public function compile($concatContext = false)
+  {
+    parent::compile($concatContext);
+    
+    // Enclose generated foreach-statement in an if-statement, so we can use
+    // foreachelse:
+    $result = "if(isset({$this->attr_source})&&"
+            . "(is_array({$this->attr_source})||"
+            . "is_object({$this->attr_source}))&&"
+            . "count({$this->attr_source})){";
+    
+    // If the foreach ID is user defined and iteration property is enabled, we
+    // have to set the variable up in the template:
+    if ($this->propEnabled('iteration')) {
+      $fVarBase = $this->foreachSysVar->compile();
+      $result.= "{$fVarBase}['iteration']=1;";
+    }
+    
+    $result.= 'foreach(';
+    $result.= $this->attr_source . ' as ';
+    
+    if (!is_null($this->foreachKeyVar)) {
+      $result.= $this->foreachKeyVar->compile() . '=>';
+    }
+    
+    $result.= $this->foreachValueVar->compile();
+    $result.= '){';
+    
+    return $this->wrapPhpCode($result);
+  }
+}
+?>

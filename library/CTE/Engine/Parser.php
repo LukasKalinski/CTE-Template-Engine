@@ -1,0 +1,250 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_Engine
+ * @since 2006-08-17
+ * @version 2007-02-04
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+/**
+ * @access private
+ */
+class CTE_Engine_Parser
+  implements CTE_Engine_Template_Monitor_Interface
+{
+  const NEW_LINE_CHAR = "\n";
+
+  /**
+   * @var int
+   */
+  private $line_no = 1;
+
+  /**
+   * @var string
+   */
+  private $tagStartDelim;
+
+  /**
+   * @var int
+   */
+  private $tagStartDelimLength;
+
+  /**
+   * @var string
+   */
+  private $tagStartDelimRegex;
+
+  /**
+   * @var string
+   */
+  private $tagEndDelim;
+
+  /**
+   * @var int
+   */
+  private $tagEndDelimLength;
+
+  /**
+   * @var string
+   */
+  private $tagEndDelimRegex;
+
+  /**
+   * @var CTE_Engine_Parser_Tag
+   */
+  private $tagParser = null;
+
+  /**
+   * If content is skipped it will be stored here until it's used.
+   *
+   * @var string
+   */
+  private $skippedContent = '';
+
+  /**
+   * @var string[]
+   */
+  private $elements;
+
+  /**
+   * @var int
+   */
+  private $elementIndex = -1;
+
+  /**
+   * @var
+   */
+  private $elementsNum;
+
+  /**
+   * @param string $content
+   * @param array $delims Tag delimiters, if other than the one's found
+   *        in config. Format: array(start_delim, end_delim).
+   */
+  public function __construct($content, array $delims = null)
+  {
+    $env = CTE_Engine_Environment::getInstance();
+    
+    // Set tag delimiters:
+    if (!is_null($delims)) {
+      $this->tagStartDelim = $delims[0];
+      $this->tagEndDelim = $delims[1];
+    } else {
+      $this->tagStartDelim = $env->getConfig()->getTagStartDelim();
+      $this->tagEndDelim = $env->getConfig()->getTagEndDelim();
+    }
+    
+    $this->tagStartDelimLength = mb_strlen($this->tagStartDelim);
+    $this->tagStartDelimRegex = preg_quote($this->tagStartDelim, '/');
+    $this->tagEndDelimLength = mb_strlen($this->tagEndDelim);
+    $this->tagEndDelimRegex = preg_quote($this->tagEndDelim, '/');
+
+    $this->elements = preg_split(
+      '/(' . $this->tagStartDelimRegex
+        .'(?:'
+          .'(?:\*.*?\*)|'
+          .'(?:'
+              .'\'.*?(?<!\\\)\'|'   // Single quoted string including tag
+                                    // delims and \'.
+              .'".*?(?<!\\\)"|'     // Double quoted string including tag
+                                    // delims and \".
+              .'[^' . $this->tagEndDelimRegex . ']*?'   // Anything else but
+                                                        // tag end-delim.
+          .')*'
+        .')'
+      . $this->tagEndDelimRegex . ')/s',
+      $content,
+      -1,
+      PREG_SPLIT_DELIM_CAPTURE|PREG_SPLIT_NO_EMPTY
+    );
+
+    $this->elementsNum = count($this->elements);
+  }
+
+  /**
+   * @see CTE_Engine_Template_Monitor_Interface::getTemplateLineNum()
+   */
+  public function getTemplateLineNum()
+  {
+    return $this->line_no;
+  }
+
+  /**
+   *
+   * @param int $line
+   * @return void
+   */
+  public function setLine($line)
+  {
+    $this->line_no = $line;
+  }
+
+  /**
+   * Returns the currently used expression delimiters.
+   *
+   * @return array (0 => left, 1 => right)
+   */
+  public function getTagDelims()
+  {
+    return array($this->tagStartDelim, $this->tagEndDelim);
+  }
+
+  /**
+   *
+   * @param string $string
+   * @return void
+   */
+  private function appendSkipped($string)
+  {
+    $this->skippedContent .= $string;
+  }
+
+  /**
+   *
+   * @return bool
+   */
+  private function hasSkippedContent()
+  {
+    return !empty($this->skippedContent);
+  }
+
+  /**
+   * Returns skipped string if found and flushes its storage, returns
+   * empty string if storage is flushed/empty.
+   *
+   * @return string
+   */
+  private function getFlushSkipped()
+  {
+    if (!is_null($this->skippedContent)) {
+      $result = $this->skippedContent;
+      $this->skippedContent = '';
+      return $result;
+    }
+  }
+
+  /**
+   * Updates the internal line number.
+   *
+   * @param string $string
+   * @return void
+   */
+  public function updatePointer($string)
+  {
+    $nls = mb_substr_count($string, self::NEW_LINE_CHAR);
+
+    if ($nls > 0) {
+      $this->line_no += $nls;
+    }
+  }
+
+  /**
+   * Returns next categorizable content chunk.
+   *
+   * Returns:
+   * - CTE_Engine_Parser_Tag if the current chunk seems to be a tag.
+   * - String representing template irrelevant content.
+   * - Null if content end has been reached.
+   *
+   * @throws CTE_Engine_Exception
+   * @return CTE_Engine_Parser_Tag |string|null
+   */
+  public function nextElement()
+  {
+    if ($this->elementIndex >= $this->elementsNum - 1) {
+      return null;
+    }
+
+    $element = $this->elements[++$this->elementIndex];
+
+    // Setup regex for a template tag:
+    $tag_regex = "/^({$this->tagStartDelimRegex})"
+               . '(.*?)'
+               . "({$this->tagEndDelimRegex})\$/s";
+    
+    // Check if we have a valid tag:
+    if (preg_match($tag_regex, $element, $match)) {
+        return new CTE_Engine_Parser_Tag($this, $match[2]);
+    } else {
+      if (mb_strpos($element, $this->tagStartDelim) !== false) {
+        throw new CTE_Engine_Template_Parsing_Exception(
+          $this,
+          'misplaced start delimiter found'
+        );
+      } else if (mb_strpos($element, $this->tagEndDelim) !== false) {
+        throw new CTE_Engine_Template_Parsing_Exception(
+          $this,
+          'misplaced end delimiter found'
+        );
+      }
+
+      $this->updatePointer($element);
+
+      return $element;
+    }
+  }
+}
+?>

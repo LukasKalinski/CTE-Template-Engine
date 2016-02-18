@@ -1,0 +1,1 @@
+{$foo|default:@file[ext.tpl]}

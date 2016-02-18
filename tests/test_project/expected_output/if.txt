@@ -1,0 +1,22 @@
+<?php if($this->v_initial['foo']['bar']==$this->v_initial['user']){?>
+<?php }?>
+
+<?php if($this->v_initial['foo']['bar']=='foobar!'&&$this->v_initial['user']==$this->v_initial['foo']['bar']){?>
+<?php }?>
+
+<?php if(($this->v_initial['page']==0||$this->v_initial['page']>77)&&$this->v_initial['isNewYear']){?>
+<?php }elseif(!$this->v_initial['isNewYear']){?>
+<?php }else{?>
+<?php }?>
+
+<?php if(isset($this->v_initial['page'])&&($this->v_initial['page']>0||$this->v_initial['page']%3==0)&&!empty($this->v_initial['user'])){?>
+<?php }elseif($this->v_initial['page']==$this->v_initial['maxPage']-1){?>
+<?php }?>
+
+<?php if($this->v_initial['user']==$this->v_initial['foo']['bar'].' Freeman'){?>
+<?php }elseif($this->v_initial['user']=='Freeman '.$this->v_initial['foo']['bar']){?>
+<?php }elseif($this->v_initial['user']=='Mr. '.$this->v_initial['foo']['bar'].' Freeman'){?>
+<?php }?>
+
+<?php if($this->v_initial['page']==($this->v_initial['maxPage']-2)){?>
+<?php }?>

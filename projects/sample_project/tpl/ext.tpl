@@ -1,0 +1,3 @@
+
+
+# External template ... printing variable:  #

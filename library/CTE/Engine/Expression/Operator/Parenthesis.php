@@ -1,0 +1,287 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_Engine_Expression_Operator
+ * @since 2006-08-19
+ * @version 2007-01-22
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+/**
+ * Parenthesis Expression
+ *
+ * <b>Free Parentheses</b>
+ * 1. Parsing
+ *    Parsing of free parentheses will involve balance checking.
+ * 2. Integration
+ *    Since parentheses aren't wanted as subject for contextual validation(1),
+ *    they will "slave-integrate" themselves into an expression. That means
+ *    that the parentheses will disappear from context list and only be a part
+ *    of the expression they belong to, unlike other operators which integrate
+ *    their neighbors into themselves instead.
+ *    <i>(1) We don't want comparison operators (for example) messing around
+ *           with parentheses and their contents when validating.</i>
+ * 3. Compilation
+ *    Compilation of parentheses will be executed from their integrators, i.e.
+ *    ($foo + 1) will result in the left parenthesis being integrated into $foo,
+ *    which then will call parenthesis::compile() when being compiled itself.
+ *
+ * <b>Contextual Parentheses</b>
+ * Contextual parentheses will be handled by the expression which requires/uses
+ * them. They may "disappear" from compile output. In other words we don't have
+ * to worry about how they work, since their behavior may be random and only
+ * depending on context.
+ *
+ * @access private
+ */
+class CTE_Engine_Expression_Operator_Parenthesis
+  extends CTE_Engine_Expression_Operator_Abstract
+    implements CTE_Engine_Expression_Context_Integrator_Interface
+{
+  const TYPE_OPEN = 1;
+  const TYPE_CLOSE = 2;
+
+  /**
+   * Stack with not finished parentheses numbers. I.e. if we have an if-tag
+   * with parentheses and then have an inline expression with parentheses,
+   * we must save the counter for the if-tag before starting a new one for
+   * the inline expression.
+   * 
+   * @var array
+   */
+  private static $openStack = array();
+  
+  /**
+   * Keeps track of open parentheses. If set to -1 no instance of this class
+   * can be created before calling self::begin().
+   * 
+   * @var int
+   */
+  private static $open = -1;
+
+  /**
+   * Current parenthesis type (open or close, see class constants).
+   * 
+   * @var int
+   */
+  private $type;
+
+  /**
+   * Will be true when integration is done.
+   * 
+   * @var bool
+   */
+  private $integrated = false;
+  
+  /**
+   * Number of "same type"-parentheses in current parenthesis object.
+   *
+   * @var int
+   */
+  private $parenthesesNum = 0;
+
+  /**
+   * Sets up open parentheses tracker.
+   * 
+   * @return void
+   */
+  public static function begin()
+  {
+    if (self::$open > -1) {
+      self::$openStack[] = self::$open;
+    }
+    
+    self::$open = 0;
+  }
+  
+  /**
+   * Returns true if parentheses are balanced.
+   * 
+   * @return bool
+   */
+  public static function isBalanced()
+  {
+    return (self::$open === 0);
+  }
+  
+  /**
+   * Resets open parentheses tracker and throws exception if parentheses were
+   * unbalanced.
+   * 
+   * @throws CTE_Engine_Expression_Exception if parentheses are unbalanced.
+   * @return void
+   */
+  public static function end()
+  {
+    if (!self::isBalanced()) {
+      throw new CTE_Engine_Expression_Exception('unbalanced parentheses');
+    }
+    
+    if (count(self::$openStack)) {
+      self::$open = array_pop(self::$openStack);
+    } else {
+      self::$open = -1;
+    }
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Abstract::requestInstance()
+   */
+  public static function requestInstance(CTE_Engine_Parser_Tag $tagParser)
+  {
+    // Make sure that this class is prepared:
+    if (self::$open == -1) {
+      throw new CTE_Engine_Expression_Exception(
+        'begin() for parenthesis class was not called'
+      );
+    }
+    
+    if ($tagParser->currentToken() == '(' ||
+        $tagParser->currentToken() == ')') {
+      return new self($tagParser);
+    }
+    
+    return null;
+  }
+
+  /**
+   * @param CTE_Engine_Parser_Tag $tagParser
+   * @throws CTE_Engine_Template_Parseing_Exception If too many
+   *         close-parentheses are found.
+   */
+  private function __construct(CTE_Engine_Parser_Tag $tagParser)
+  {
+    $parenthesis = $tagParser->currentToken();
+
+    // Fetch all same-type parentheses from tag parser:
+    do {
+      $this->parenthesesNum++;
+      $this->nextIdentifier($tagParser, false);
+    } while ($tagParser->valid() && $tagParser->currentToken() == $parenthesis);
+
+    if ($parenthesis == '(') {
+      $this->type = self::TYPE_OPEN;
+      self::$open += $this->parenthesesNum;
+    } else {
+      $this->type = self::TYPE_CLOSE;
+      self::$open -= $this->parenthesesNum;
+      
+      // Make sure we have more open than close parentheses:
+      if (self::$open < 0) {
+        throw new CTE_Engine_Template_Parsing_Exception(
+          $this,
+          'unexpected end-parenthesis'
+        );
+      }
+    }
+  }
+
+  /**
+   * Returns true if this parenthesis is of type self::TYPE_OPEN.
+   * 
+   * @return bool
+   */
+  public function isOpen()
+  {
+    return $this->type == self::TYPE_OPEN;
+  }
+
+  /**
+   * Returns true if this parenthesis is of type self::TYPE_CLOSE.
+   * 
+   * @return bool
+   */
+  public function isClose()
+  {
+    return !$this->isOpen();
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Abstract::getName()
+   */
+  public function getName()
+  {
+    return 'parenthesis operator';
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Context_Integrator_Interface::
+   *      integrationPriority()
+   */
+  public function integrationPriority()
+  {
+    return CTE_Engine_Expression_Context_Integrator_Interface::
+           PRIORITY_PARENTHESIS;
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Context_Integrator_Interface::isIntegrated()
+   */
+  public function isIntegrated()
+  {
+    return $this->integrated;
+  }
+  
+  /**
+   * Tries to integrate this instance into a neighbor, if neighbor isn't a
+   * valid instance an exception will be thrown.
+   *
+   * @see CTE_Engine_Expression_Context_Integrator_Interface::integrate()
+   *
+   * @todo fix valid-instance-list
+   */
+  public function integrate()
+  {
+    // Neighbor into which the parentheses will be inserted:
+    $neighbor = null;
+    
+    if ($this->type == self::TYPE_OPEN) {
+      
+      $neighbor = $this->getRightNeighbor();
+      
+      // Integrate into right operand:
+      $neighbor->insertLeftComponent($this);
+    } else if ($this->type == self::TYPE_CLOSE) {
+
+      $neighbor = $this->getLeftNeighbor();
+      
+      // Integrate into left operand:
+      $neighbor->insertRightComponent($this);
+    } else {
+      // Unknown parenthesis type:
+      throw new CTE_Engine_Expression_Exception('invalid parenthesis type');
+    }
+    
+    // Make sure neigbor is valid:
+    if (!$neighbor instanceof CTE_Engine_Expression_Variable &&
+        !$neighbor instanceof CTE_Engine_Expression_Literal_Abstract &&
+        !$neighbor instanceof CTE_Engine_Expression_Resource &&
+        !$neighbor instanceof CTE_Engine_Expression_LogicalNot &&
+        !$neighbor instanceof CTE_Engine_Expression_Function &&
+        !$neighbor instanceof CTE_Engine_Expression_Modifier) {
+    
+      throw new CTE_Engine_Template_Contextual_Exception(
+        $this,
+        'unexpected parenthesis near ' . $neighbor->getName() . ' expression'
+      );
+    }
+    
+    // Remover ourselves from context:
+    $this->context->remove($this);
+    
+    $this->integrated = true;
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Compilable_Interface::compile()
+   * @throws CTE_Engine_Template_Parsing_Exception
+   */
+  public function compile($concatContext = false)
+  {
+    $parenthesis = ($this->type == self::TYPE_OPEN) ? '(' : ')';
+    return str_repeat($parenthesis, $this->parenthesesNum);
+  }
+}
+?>

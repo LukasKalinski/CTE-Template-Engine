@@ -1,0 +1,315 @@
+<?php
+/**
+ *
+ *
+ * @package CTE
+ * @since 2006-08-07
+ * @version 2007-01-27
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+require_once('Cylab.php');
+
+/**
+ * CTE Main Engine
+ *
+ * All user-triggered exceptions are expected to be catched here and translated
+ * into an error message.
+ * 
+ * Purpose:
+ * 1. Handle caching.
+ * 2. Create PHP file out of compiled template contents.
+ *
+ * @access private
+ */
+class CTE_Engine
+  implements CTE_Engine_Process_Creator_Interface
+{
+  /**
+   * Tells for how long (in seconds) we want to cache our PHP file. See
+   * {@link CTE_Config::$defaultCacheMode} for further instructions on special
+   * values. Default value will be set to whatever it is set to in the current
+   * CTE_Config instance.
+   * 
+   * @var int
+   */
+  private $cache;
+  
+  /**
+   * @var CTE_Engine_ExpressionMapper
+   */
+  private $expressionMapper;
+
+  /**
+   * @var CTE_Config
+   */
+  private $config;
+
+  /**
+   * @var CTE_Engine_PluginManager
+   */
+  private $pluginManager;
+
+  /**
+   * @var CTE_Engine_VariableRegistry
+   */
+  private $varRegistry;
+  
+  /**
+   * @var CTE_Engine_ProcessManager
+   */
+  private $processManager;
+
+  /**
+   *
+   * @param CTE_Config $config
+   * @param array $tplVars
+   */
+  public function __construct(CTE_Config $config, array &$tplVars)
+  {
+    $this->config = $config;
+    $this->cache = $config->getDefaultCache();
+    
+    $this->processManager = new CTE_Engine_ProcessManager();
+    $this->pluginManager = new CTE_Engine_PluginManager($config);
+    $this->varRegistry = new CTE_Engine_VariableRegistry($tplVars, $config);
+    
+    CTE_Engine_Environment::getInstance()->register($this);
+    
+    $this->expressionMapper = new CTE_Engine_ExpressionMapper();
+    $this->expressionMapper->registerExpression('Tag_Comment');
+    $this->expressionMapper->registerExpression('Tag_Print');
+    $this->expressionMapper->registerExpression('Tag_Literal');
+    $this->expressionMapper->registerExpression('Tag_If');
+    $this->expressionMapper->registerExpression('Tag_Foreach');
+    $this->expressionMapper->registerExpression('Tag_Section');
+
+    // Create a new compiler for us:
+    CTE_Engine_Environment::getInstance()->createCompiler(
+      $this->expressionMapper,
+      CTE_Engine_Compiler::MODE_COMPILE
+    );
+  }
+
+  /**
+   * @see CTE_Engine_Process_Creator_Interface::notifyProcessUpdated()
+   */
+  public function notifyProcessUpdated(CTE_Engine_Process_Abstract $process)
+  {
+  }
+  
+  /**
+   * Enables or disables caching.
+   * 
+   * @param int $cache
+   * @return void
+   */
+  public function setCache($cache)
+  {
+    $this->cache = max(-1, $cache);
+  }
+  
+  /**
+   * Returns true if caching is on.
+   * 
+   * @return bool
+   */
+  public function cacheOn()
+  {
+    return $this->cache > 0 || $this->cache == CTE_Config::CACHE_FOREVER;
+  }
+  
+  /**
+   * Resolves a relative filepath into a CTE resource object.
+   * 
+   * @param string $path File path relative to template root.
+   * @throws CTE_DataAccess_Exception if file doesn't exist.
+   * @return CTE_DataAccess_File
+   */
+  public function createFileResource()
+  {
+    return new CTE_DataAccess_File($this->config);
+  }
+  
+  /**
+   * Creates a directory if not already created. Returns true if directory was
+   * created and false if it already existed.
+   * 
+   * @param string $path
+   * @param int $chmod  Octal representation of permissions.
+   * @param array $owner  0:user and 1:group.
+   * @return bool
+   */
+  private function createDir($path, $chmod = 0770)
+  {
+    // Create directory if not existing, alse check that no file with the
+    // same path exists:
+    if(!is_dir($path) && !file_exists($path)) {
+      mkdir($path, $chmod);
+      return true;
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Builds and creates a PHP file out of the supplied template content input.
+   *
+   * @param CTE_DataAccess_Interface $resource
+   * @param string $resource_path
+   * @return string The full path to compiled template.
+   */
+  public function build(CTE_DataAccess_Interface $resource, $resource_path)
+  {
+    // Fetch template content from resource:
+    $tplContents = $resource->fetch($resource_path);
+    
+    // Create a parser for template content:
+    $parser = new CTE_Engine_Parser($tplContents);
+    
+    // Enter root template process:
+    $process = $this->processManager->enterProcess($this, 'Template_Root');
+
+    // Init compiled content container:
+    $compiled = '';
+    
+$time_start = get_microtime();                                                   ###
+    
+    // Compile template content. Possible user-triggered exception will be
+    // catched and displayed as a custom error message.
+    try {
+      $compiled = CTE_Engine_Environment::
+        getInstance()->
+        getCompiler()->
+        compile($parser);
+      
+      // Exit template root process (we're done now):
+      $this->processManager->leaveProcess($process);
+    } catch (CTE_Engine_Template_Exception $e) {
+      $error = new CTE_Error_Template($this->config, $e, $resource_path);
+      $error->trigger();
+    }
+    
+    // Insert cache expire-guard if cache is enabled:
+    if ($this->cacheOn()) {
+      $return = '<?php '
+              . 'return \'' . $this->cache . '\';'
+              . '?>';
+      
+      // Since the caching procedure will evaluate all PHP code, we must put
+      // the above code in an echo statement too, so it may be evaluated 
+      // when the cached file is included:
+      $return = '<?php echo \''
+              . preg_replace('/(\\\|\')/', '\\\'', $return)
+              . '\';?>'
+              // We want the template file to behave the same way, so we can
+              // identify it as a file to cache:
+              . $return;
+      
+      // Merge with compiled content:
+      $compiled .= $return;
+    }
+
+    /**
+     * @@@ IMPORTANT !!!
+     * Do not append any cache-defying statements _onto_ $compiled (inserting at
+     * the beginning is ok though) from here. The appended return statement (see
+     * caching above) will cause everything after it to be ignored.
+     * @@@
+     */
+    
+    //
+    // # Put all includes here ................................................  ###
+    //
+    
+    // Insert plugin instructions (includes, instance creations etc.):
+    $phpInstr = implode($this->pluginManager->getFlushPhpInstructions());
+    $compiled = $phpInstr . $compiled;
+    
+    // Insert compiler stamp if that's ok with config:
+    if ($this->config->doAddCompilerStamp()) {
+      $date = date('Y-m-d H:i:s');
+      $version = CTE::VERSION;
+      $stamp = "<?php /* Compiled at $date with CTE $version */ ?>";
+      
+      // If we're caching, we need to put the compiler stamp in an
+      // echo statement:
+      if ($this->cacheOn()) {
+        $stamp = '<?php echo \'' . addslashes($stamp) . '\';?>';
+      }
+      
+      // Merge with compiled contents:
+      $compiled = $stamp . $compiled;
+    }
+
+echo $compiled;
+$time = round(get_microtime() - $time_start, 3);
+exit("\n\n***\n# template compiled in $time s");                                 ###
+
+    
+    // Get path components for the compiled template:
+    $pathComponents = $this->config->createCompiledFilePath($resource_path);
+    
+    // Pop off the file name from path components, replacing .tpl with .php:
+    $filename = array_pop($pathComponents);
+    
+    // The path will be evolved below:
+    $path = $this->config->getTplcRoot();
+    
+    // Make sure we're allowed to write in compiled templates root:
+    if (!is_writeable($path)) {
+      throw new CTE_Exception("could not write to directory: $path");
+    }
+    
+    // Create the directories which doesn't exist:
+    for ($i=0, $ii=count($pathComponents); $i<$ii; $i++) {
+      $path .= $pathComponents[$i] . DIRECTORY_SEPARATOR;
+      
+      // Create if not exists (that's the way createDir works):
+      $this->createDir($path);
+    }
+    
+    // Merge directory path with template filename:
+    $path .= $filename;
+    
+    // Store compiled content in file:
+    file_put_contents($path, $compiled);
+  }
+
+  /**
+   * @return CTE_Config
+   */
+  public function getConfig()
+  {
+    return $this->config;
+  }
+
+  /**
+   *
+   * @return CTE_Engine_PluginManager
+   */
+  public function getPluginManager()
+  {
+    return $this->pluginManager;
+  }
+
+  /**
+   *
+   * @return CTE_Engine_ProcessManager
+   */
+  public function getProcessManager()
+  {
+    return $this->processManager;
+  }
+
+  /**
+   *
+   * @return CTE_Engine_VariableRegistry
+   */
+  public function getVariableRegistry()
+  {
+    return $this->varRegistry;
+  }
+}
+?>

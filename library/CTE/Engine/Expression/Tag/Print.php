@@ -1,0 +1,216 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_Engine_Expression_Tag
+ * @since 2006-08-12
+ * @version 2007-02-10
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+/**
+ * Print Tag
+ * 
+ * Assumes that all expressions to print are evaluable.
+ * 
+ * @access private
+ * 
+ * @todo Introduce ~ prefix for forced evaluation ?
+ */
+class CTE_Engine_Expression_Tag_Print
+  extends CTE_Engine_Expression_Tag_Abstract
+    implements CTE_Engine_Expression_Context_Creator_Interface,
+               CTE_Engine_Expression_Evaluable_Interface
+{
+  /**
+   * @var CTE_Engine_ExpressionMapper
+   */
+  private static $printSourceMapper;
+
+  /**
+   * The source to print.
+   * 
+   * @var CTE_Engine_Expression_Abstract
+   */
+  private $source;
+  
+  /**
+   * @see CTE_Engine_Expression_Abstract::requestInstance()
+   */
+  public static function requestInstance(CTE_Engine_Parser_Tag $tagParser)
+  {
+    // Check if we begin with a variable or a number:
+    if ($tagParser->beginsWith('$') ||
+        $tagParser->beginsWith('@') ||
+        preg_match('/^[0-9]/', $tagParser->__toString())) {
+      self::tokenizeTag($tagParser);
+      return new self($tagParser);
+    }
+    
+    return null;
+  }
+
+  /**
+   * Does static setup of this class.
+   * 
+   * @return void
+   */
+  private static function setup()
+  {
+    if (!isset(self::$printSourceMapper)) {
+      self::$printSourceMapper = new CTE_Engine_ExpressionMapper();
+      self::$printSourceMapper->registerExpression('Variable');
+      self::$printSourceMapper->registerExpression('Resource');
+      self::$printSourceMapper->registerExpression('Modifier');
+      self::$printSourceMapper->registerExpression('Operator_Parenthesis');
+      self::$printSourceMapper->registerExpression('Arithmetic');
+      self::$printSourceMapper->registerExpression('Literal_Numeric');
+    }
+  }
+  
+  /**
+   * @param CTE_Engine_Parser_Tag $tagParser
+   */
+  private function __construct(CTE_Engine_Parser_Tag $tagParser)
+  {
+    self::setup();
+    $this->setLineNum($tagParser->getTemplateLineNum());
+
+    // Prepare parenthesis class:
+    CTE_Engine_Expression_Operator_Parenthesis::begin();
+    
+    // Initiate a context for us:
+    parent::initMainContext();
+    
+    // Map expressions:
+    while ($tagParser->valid()) {
+      $expr = self::$printSourceMapper->mapExpression($tagParser);
+
+      if (is_null($expr)) {
+        break;
+      }
+      
+      $this->context->insert($expr);
+    }
+    
+    // Make sure that parentheses are balanced:
+    if (!CTE_Engine_Expression_Operator_Parenthesis::isBalanced()) {
+      throw new CTE_Engine_Template_Parsing_Exception(
+        $this,
+        'unbalanced parentheses'
+      );
+    }
+    
+    // Reset parenthesis class:
+    CTE_Engine_Expression_Operator_Parenthesis::end();
+    
+    $this->source = $this->context->resolveExpression();
+    
+    // Make sure source is valid (not null):
+    if (is_null($this->source)) {
+      throw new CTE_Engine_Template_Parsing_Exception(
+        $this,
+        'invalid print source'
+      );
+    }
+
+    // Fetch possible attributes if tag parser isn't finished:
+    $attrs = $this->parseAttrs($tagParser);
+    
+    // Import arguments into variable scope if we're printing a resource:
+    if ($this->source instanceof CTE_Engine_Expression_Resource) {
+      
+      foreach ($attrs as $attr => $value) {
+        $this->source->setParam($attr, $value);
+      }
+    // ... or a modified resource (i.e. resource in modifier expression):
+    } else if ($this->source instanceof CTE_Engine_Expression_Modifier &&
+               $this->source->getOperand() instanceof
+                 CTE_Engine_Expression_Resource) {
+      foreach ($attrs as $attr => $value) {
+        $this->source->getOperand()->setParam($attr, $value);
+      }
+    // Otherwise we don't want arguments:
+    } else if (count($attrs) > 0) {
+      throw new CTE_Engine_Template_Contextual_Exception(
+        $this,
+        'attributes only allowed for resources'
+      );
+    }
+  }
+
+  /**
+   * Handles the context situation when an expression wasn't integrated.
+   * 
+   * @see CTE_Engine_Expression_Context_Creator_Interface::
+   *      handleContextNotIntegratedExpr()
+   * @throws CTE_Engine_Template_Contextual_Exception
+   * @return void
+   */
+  public function handleContextNotIntegratedExpr()
+  {
+    throw new CTE_Engine_Template_Contextual_Exception(
+      $this,
+      'syntax error'
+    );
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Abstract::getName()
+   */
+  public function getName()
+  {
+    return 'print tag';
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Evaluable_Interface::evaluate()
+   */
+  public function evaluate($inline)
+  {
+    return $this->source->evaluate($inline);
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Evaluable_Interface::isStatic()
+   */
+  public function isStatic()
+  {
+    if ($this->source instanceof CTE_Engine_Expression_Evaluable_Interface) {
+      return $this->source->isStatic();
+    } else {
+      return false;
+    }
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Compilable_Interface::compile()
+   */
+  public function compile($concatContext = false)
+  {
+    // If this print is static, we're doing evaluation instead:
+    if ($this->isStatic()) {
+      return $this->evaluate($concatContext);
+    }
+    
+    if ($this->source instanceof CTE_Engine_Expression_Resource) {
+      if ($concatContext) {
+        return $this->source->compile(true);
+      } else {
+        return $this->source->compile(false);
+      }
+    }
+    
+    $result = $this->source->compile(true);
+    
+    if (!$concatContext) {
+      $result = $this->wrapPhpCode("echo $result;");
+    } else if ($this->source instanceof CTE_Engine_Expression_Arithmetic) {
+      $result = "($result)";
+    }
+    
+    return $result;
+  }
+}
+?>

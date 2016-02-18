@@ -1,0 +1,14 @@
+<?php if(isset($this->v_initial['persons'])&&(is_array($this->v_initial['persons'])||is_object($this->v_initial['persons']))&&count($this->v_initial['persons'])){$this->v_foreach[1]['f1']['iteration']=1;foreach($this->v_initial['persons'] as $this->v_foreach[1]['f1'][0]['myKey']=>$this->v_foreach[1]['f1'][0]['myItem']){?>
+  <?php echo $this->v_foreach[1]['f1']['iteration'];?>
+  <?php echo $this->v_foreach[1]['f1'][0]['myKey'];?>
+  <?php echo $this->v_foreach[1]['f1'][0]['myItem'];?>
+<?php }}else{?>
+<?php }?>
+
+<?php if(isset($this->v_initial['persons'])&&(is_array($this->v_initial['persons'])||is_object($this->v_initial['persons']))&&count($this->v_initial['persons'])){foreach($this->v_initial['persons'] as $this->v_foreach[1][3][0]['myItem']){?>
+  <?php echo $this->v_foreach[1][3][0]['myItem'];?>
+<?php }}?>
+
+<?php if(isset($this->v_initial['persons'])&&(is_array($this->v_initial['persons'])||is_object($this->v_initial['persons']))&&count($this->v_initial['persons'])){foreach($this->v_initial['persons'] as $this->v_foreach[1]['myForeach']['value']){?>
+  <?php echo $this->v_foreach[1]['myForeach']['value'];?>
+<?php }}?>

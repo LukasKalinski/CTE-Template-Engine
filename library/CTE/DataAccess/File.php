@@ -1,0 +1,85 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_DataAccess
+ * @since 2006-07-24
+ * @version 2007-02-07
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+/**
+ * @access private
+ */
+class CTE_DataAccess_File implements CTE_DataAccess_Interface
+{
+  /**
+   * @var string
+   */
+  private $tpl_root;
+
+  /**
+   * @param string $tpl_root The root to look in when reading template files.
+   */
+  public function __construct(CTE_Config $config)
+  {
+    $this->tpl_root = $config->getTplRoot();
+  }
+
+  /**
+   * @see CTE_DataAccess_Interface::getDsn()
+   */
+  public function getDsn()
+  {
+    return 'file';
+  }
+
+  /**
+   * @see CTE_DataAccess_Interface::hasRenderMode()
+   */
+  public function getRenderMode($path)
+  {
+    return (substr($path, -4, 4) == '.tpl') ?
+             CTE_DataAccess_Interface::RENDER_TPL :
+             CTE_DataAccess_Interface::RENDER_PLAIN;
+  }
+
+  /**
+   * @see CTE_DataAccess_Interface::getTplDelims()
+   */
+  public function getTplDelims()
+  {
+    return null;
+  }
+  
+  /**
+   * Fetches contents from a file with path relative to templates root.
+   * 
+   * @see CTE_DataAccess_Interface::fetch()
+   * @param string $path File path relative to template root.
+   * @throws CTE_DataAccess_Exception if file isn't found or isn't readable.
+   * @return string The contents of the file.
+   */
+  public function fetch($path)
+  {
+    // Remove possible '../' from path (security):
+    $path = str_replace('..'.DIRECTORY_SEPARATOR, '', $path);
+    
+    // Create full file path and strip possible leading dir separators:
+    $file = $this->tpl_root . ltrim($path, DIRECTORY_SEPARATOR);
+
+    // Make sure the file exists:
+    if (!file_exists($file)) {
+      throw new CTE_DataAccess_Exception("file //$file// not found");
+    }
+    
+    // Make sure we have read permissions:
+    if (!is_readable($file)) {
+      throw new CTE_DataAccess_Exception("failed to read file //$file//");
+    }
+
+    return file_get_contents($file);
+  }
+}
+?>

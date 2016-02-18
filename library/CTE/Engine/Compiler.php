@@ -1,0 +1,264 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_Engine
+ * @since 2006-08-17
+ * @version 2007-02-10
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+/**
+ * @access private
+ * 
+ * @deprecated ... the internal outputfiltering also seem to be unused... check
+ *             if it might be used in the future and deprecate if it won't...
+ *             [2007-02-07].
+ */
+class CTE_Engine_Compiler
+{
+  const MODE_COMPILE = 1;
+  const MODE_COMPILE_CONCAT = 2;
+  const MODE_EVAL = 3;
+  const MODE_EVAL_INLINE = 4;
+  
+  /**
+   * @var int
+   */
+  private $mode;
+  
+  /**
+   * @var CTE_Engine_Compiler_OutputFilter_Interface[]
+   */
+  private $outputFilters = array();
+
+  /**
+   * @var CTE_Engine_Parser_Tag_Handler_Interface[]
+   */
+  private $tagParserHandlers = array();
+
+  /**
+   * @var CTE_Engine_ExpressionMapper
+   */
+  private $exprMapper;
+
+  /**
+   * True if we're in the compile() method.
+   *
+   * @var bool
+   */
+  private $isCompiling = false;
+  
+  /**
+   *
+   * @param CTE_Engine_ExpressionMapper $exprMapper
+   */
+  public function __construct(CTE_Engine_ExpressionMapper $exprMapper, $mode)
+  {
+    $this->exprMapper = $exprMapper;
+    $this->mode = $mode;
+  }
+
+  /**
+   * @param CTE_Engine_Parser_Tag_Handler_Interface $handler
+   * @return void
+   */
+  public function registerTagParserHandler(
+      CTE_Engine_Parser_Tag_Handler_Interface $handler
+    )
+  {
+    array_push($this->tagParserHandlers, $handler);
+  }
+
+  /**
+   * @param CTE_Engine_Parser_Tag_Handler_Interface $handler
+   * @throws CTE_Engine_Exception
+   * @return void
+   */
+  public function unregisterTagParserHandler(
+      CTE_Engine_Parser_Tag_Handler_Interface $handler
+    )
+  {
+    if (array_pop($this->tagParserHandlers) !== $handler) {
+      throw new CTE_Engine_Exception(
+        'cannot unregister subparser handler if not on top'
+      );
+    }
+  }
+
+  /**
+   * @param CTE_Engine_Compiler_OutputFilter_Interface $filter
+   * @return void
+   */
+  public function registerOutputFilter(
+      CTE_Engine_Compiler_OutputFilter_Interface $filter
+    )
+  {
+    array_push($this->outputFilters, $filter);
+  }
+
+  /**
+   * @param CTE_Engine_Compiler_OutputFilter_Interface $filter
+   * @throws CTE_Engine_Exception
+   * @return void
+   */
+  public function unregisterOutputFilter(
+      CTE_Engine_Compiler_OutputFilter_Interface $filter
+    )
+  {
+    if (array_pop($this->outputFilters) !== $filter) {
+      throw new CTE_Engine_Exception(
+        'cannot unregister output filter if not on top'
+      );
+    }
+  }
+
+  /**
+   * Executes the most recently registered tag parser handler on $tagParser
+   * and returns the compiled output.
+   *
+   * @return string
+   */
+  private function handleTagParser(CTE_Engine_Parser_Tag $tagParser)
+  {
+    end($this->tagParserHandlers);
+    $current = current($this->tagParserHandlers);
+
+    if (is_object($current)) {
+      return $current->handleTagParser($tagParser);
+    } else {
+      return $tagParser;
+    }
+  }
+
+  /**
+   * @param string $output
+   * @return void
+   */
+  private function applyOutputFilters(&$output)
+  {
+    for ($i=count($this->outputFilters)-1; $i>0; $i--) {
+      $output = $this->outputFilters[$i]->filterCompilerOutput($output);
+    }
+  }
+
+  /**
+   * Retrieves [references to] subparsers from TemplateParser $parser and
+   * modifies them depending on their type; that is, either delegating an
+   * expression parser to an appropriate expression class for decomposition or,
+   * in case of a Plain subparser, leaving its content as is. The expression
+   * parsers will be filtered before and after possible modification
+   * (compilation, etc). For further details refer to expression classes
+   * implementing {@link CTE_Engine_Compiler_OutputFilter_Interface}.
+   *
+   * @param CTE_Engine_Parser $parser
+   * @return string
+   */
+  public function compile(CTE_Engine_Parser $parser)
+  {
+    if ($this->isCompiling) {
+      throw new CTE_Engine_Exception(
+        'cannot enter compile() method recursively'
+      );
+    }
+
+    // Get current template process:
+    $tplProcess = CTE_Engine_Environment::
+      getInstance()->
+      getCurrentTemplateProcess();
+    
+    $this->isCompiling = true;
+    
+    $result = '';
+    
+    $element = null;
+    while (($element = $parser->nextElement()) != null) {
+
+      // Try to handle possible tag parser:
+      if ($element instanceof CTE_Engine_Parser_Tag) {
+        $element = $this->handleTagParser($element);
+      }
+
+      // If $element still is a tag parser then handle it here:
+      if ($element instanceof CTE_Engine_Parser_Tag) {
+
+        // Retrieve expression object for current subparser:
+        $expression = $this->exprMapper->mapExpression($element);
+
+        if (is_null($expression)) {
+          if ($element->tokenized()) {
+            throw new CTE_Engine_Template_Parsing_Exception(
+              $element,
+              "compiler: unknown tag: {$element->currentToken()}..."
+            );
+          } else {
+            throw new CTE_Engine_Template_Parsing_Exception(
+              $element,
+              "compiler: unknown tag: {$element->__toString()}"
+            );
+          }
+        }
+
+        switch ($this->mode) {
+          case self::MODE_COMPILE:
+            $element = $expression->compile(false);
+            break;
+          
+          case self::MODE_COMPILE_CONCAT:
+            $element = $expression->compile(true);
+            break;
+          
+          case self::MODE_EVAL:
+          case self::MODE_EVAL_INLINE:
+            // Make sure the expression is evaluable:
+            if (!$expression instanceof
+                  CTE_Engine_Expression_Evaluable_Interface) {
+              throw new CTE_Engine_Template_Contextual_Exception(
+                $expression,
+                'invalid context, cannot be evaluated during compile time'
+              );
+            }
+            
+            $element = $expression->evaluate($this->mode != self::MODE_EVAL);
+        }
+      
+      // If we have a plain string:
+      } else if (is_string($element)) {
+        switch ($this->mode) {
+          case self::MODE_COMPILE:
+          case self::MODE_EVAL:
+          case self::MODE_EVAL_INLINE:
+            break;
+          
+          case self::MODE_COMPILE_CONCAT:
+            $element = CTE_Util_String::squote($element);
+            break;
+        }
+      } else {
+        throw new CTE_Engine_Exception('invalid element');
+      }
+
+      $this->applyOutputFilters($element);
+      
+      // Insert string concatenator if we're compiling inline:
+      if ($this->mode == self::MODE_COMPILE_CONCAT && !empty($result)) {
+        $result .= '.';
+      }
+      
+      $result .= $element;
+    } /* End of main compile loop. */
+
+    // Remove unnecessary concatenations ('foo'.'bar'):
+    $result = str_replace("'.'", '', $result);
+    
+    // Wrap output in single-quotes if we're inline-evaluating:
+    if ($this->mode == self::MODE_EVAL_INLINE) {
+      $result = CTE_Util_String::squote($result);
+    }
+    
+    $this->isCompiling = false;
+    return $result;
+  }
+}
+?>

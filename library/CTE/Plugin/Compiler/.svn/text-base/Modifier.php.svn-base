@@ -1,0 +1,397 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_Engine_Expression
+ * @since 2006-09-03
+ * @version 2007-02-06
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+require_once('Context/Integrator/Abstract.php');
+
+/**
+ * @access private
+ * 
+ * @todo build plugin support
+ */
+class CTE_Engine_Expression_Modifier
+  extends CTE_Engine_Expression_Context_Integrator_Abstract
+    implements CTE_Engine_Expression_Compilable_Interface,
+               CTE_Engine_Expression_Evaluable_Interface
+{
+  /**
+   * @var CTE_Engine_ExpressionMapper
+   */
+  private static $argMapper = null;
+
+  /**
+   * @var string[]
+   */
+  private static $allowedOperands = array(
+    'CTE_Engine_Expression_Variable',
+    'CTE_Engine_Expression_Resource',
+    'CTE_Engine_Expression_Modifier',
+    'CTE_Engine_Expression_Literal_ParseableString'
+  );
+
+  /**
+   * Modifier to php function mapper.
+   * 
+   * Illustration:
+   * array(
+   *   <php function expression>,
+   *   array(
+   *     <required/default* arguments>
+   *   )
+   * )
+   * (*) Null means the argument is required, other value means that it is the
+   *     default value.
+   * 
+   * @var aArray
+   */
+  private static $modMapper = array(
+    'upper' => array('strtoupper($)', array()),
+    'lower' => array('strtolower($)', array())
+//    'default' => array('(isset($)&&!empty($)?$:&0)', array(null))
+  );
+  
+  /**
+   * @var string
+   */
+  private $modName;
+  
+  /**
+   * @var array
+   */
+  private $modFunc = null;
+
+  /**
+   * @var CTE_Engine_Expression_Abstract[]
+   */
+  private $args = array();
+
+  /**
+   * @see CTE_Engine_Expression_Abstract::requestInstance()
+   */
+  public static function requestInstance(CTE_Engine_Parser_Tag $tagParser)
+  {
+    if ($tagParser->currentToken() == '|') {
+      return new self($tagParser);
+    } else {
+      return null;
+    }
+  }
+
+  /**
+   * @param CTE_Engine_Parser_Tag $tagParser
+   */
+  private function __construct(CTE_Engine_Parser_Tag $tagParser)
+  {
+    $this->setLineNum($tagParser->getTemplateLineNum());
+    $this->nextIdentifier($tagParser);
+
+    $this->modName = $tagParser->currentToken();
+
+    // Whether we have a strict modifier to built-in php function ir not:
+    if (isset(self::$modMapper[$this->modName])) {
+      $this->modFunc = self::$modMapper[$this->modName];
+    }
+    
+    $tagParser->nextToken();
+    $this->parseArgs($tagParser);
+  }
+
+  /**
+   * Applies the current modifier (including possible modifier-operands) onto
+   * $string and returns it.
+   * 
+   * @param string $string
+   * @return string
+   */
+  public function apply($string)
+  {
+    
+  }
+  
+  /**
+   * Returns the core expression onto which this modifier is applied. Note that
+   * a modifier can be applied onto another modifier, and so on... that's why
+   * this is useful.
+   * 
+   * @throws CTE_Engine_Expression_Exception if the current modifier hasn't been
+   *         integrated.
+   * @return CTE_Engine_Expression_Abstract
+   */
+  public function getCoreOperand()
+  {
+    if (!$this->isIntegrated()) {
+      throw new CTE_Engine_Expression_Exception(
+        'integration required to get core expression'
+      );
+    }
+    
+    $ce = $this->leftOperand;
+    while ($ce instanceof self) {
+      $ce = $ce->getOperand();
+    }
+    
+    return $ce;
+  }
+  
+  /**
+   * Returns the operand on which the modifier operates.
+   * 
+   * @throws CTE_Engine_Expression_Exception if modifier isn't integrated.
+   * @return CTE_Engine_Expression_Abstract
+   */
+  public function getOperand()
+  {
+    // We cannot get any operand if no integration was done:
+    if (!$this->isIntegrated()) {
+      throw new CTE_Engine_Expression_Exception(
+        'no operand available due to lack of integration'
+      );
+    }
+    
+    return $this->leftOperand;
+  }
+  
+  /**
+   * Returns true if current modifier isn't a PHP built-in function.
+   * 
+   * @return bool
+   */
+  private function isPhpBuiltIn()
+  {
+    return !is_null($this->modFunc);
+  }
+  
+  /**
+   * Parses modifier arguments off the $tagParser and storess them in a member
+   * array.
+   * 
+   * @throws CTE_Engine_Template_Parsing_Exception
+   * @return void
+   */
+  private function parseArgs(CTE_Engine_Parser_Tag $tagParser)
+  {
+    if (!isset(self::$argMapper)) {
+      self::$argMapper = new CTE_Engine_ExpressionMapper();
+      self::$argMapper->registerExpression('Variable');
+      self::$argMapper->registerExpression('Resource');
+      self::$argMapper->registerExpression('Literal_Bool');
+      self::$argMapper->registerExpression('Literal_Numeric');
+      self::$argMapper->registerExpression('Literal_String');
+      self::$argMapper->registerExpression('Literal_ParseableString');
+    }
+
+    while ($tagParser->valid() && $tagParser->currentToken() == ':') {
+      $this->nextIdentifier($tagParser);
+
+      $expression = self::$argMapper->mapExpression($tagParser);
+
+      if (is_null($expression)) {
+        throw new CTE_Engine_Template_Parsing_Exception(
+          $this,
+          "invalid argument: {$tagParser->currentToken()}"
+        );
+      }
+
+      array_push($this->args, $expression);
+    }
+  }
+
+  /**
+   * Maps current modifier into a built-in PHP function and returns the call
+   * string.
+   * 
+   * @param bool $evaluate Whether to build for evaluation or not.
+   * @return string
+   */
+  private function mapPhpFunc($evaluate = false)
+  {
+    $callStr = $this->modFunc[0];
+    $argFormat = $this->modFunc[1];
+    
+    // Loop through pre-defined argument list and update it:
+    for ($i=0, $ii=count($argFormat); $i<$ii; $i++) {
+      
+      $arg = null;
+      
+      // Set user argument if found:
+      if (isset($this->args[$i])) {
+        
+        // Whether to evaluate or compile the argument:
+        if ($evaluate) {
+          $arg = $this->args[$i]->evaluate(true);
+        } else {
+          $arg = $this->args[$i]->compile();
+        }
+      // Otherwise try to set default argument value or throw exception on
+      // failure:
+      } else {
+        if (!is_null($argFormat[$i])) {
+          $arg = $argFormat[$i];
+        } else {
+          throw new CTE_Engine_Template_Contextual_Exception(
+            $this,
+            'missing required argument (' . ($i+1) . ')'
+          );
+        }
+      }
+      
+      $callStr = str_replace("&$i", $arg, $callStr);
+    }
+    
+    return $callStr;
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Context_Integrator_Interface::
+   *      integrationPriority()
+   */
+  public function integrationPriority()
+  {
+    return CTE_Engine_Expression_Context_Integrator_Interface::
+      PRIORITY_MODIFIER;
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Context_Integrator_Interface::integrate()
+   */
+  public function integrate()
+  {
+    if ($this->isIntegrated()) {
+      return;
+    }
+    
+    parent::integrate();
+
+    $left = $this->getLeftNeighbor();
+
+    if (is_null($left)) {
+      throw new CTE_Engine_Template_Contextual_Exception(
+        $this,
+        'missing modifier operand'
+      );
+    }
+
+    $valid = false;
+    foreach (self::$allowedOperands as $instanceName) {
+      if ($left instanceof $instanceName) {
+        $valid = true;
+        break;
+      }
+    }
+
+    if (!$valid) {
+      throw new CTE_Engine_Template_Contextual_Exception(
+        $this,
+        "invalid operand type for modifier: {$left->getName()}"
+      );
+    }
+
+    $this->vacuumLeft(true);
+    $this->finalizeIntegration();
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Abstract::getName()
+   */
+  public function getName()
+  {
+    return "modifier //{$this->modName}//";
+  }
+
+  /**
+   * Generates result depending on whether we want it evaluated or not, but
+   * primarily on whether the modifier is a built-in PHP function alias or a 
+   * plugin.
+   * 
+   * @param bool $evaluate Whether to generate evaluated or compiled result.
+   * @return string
+   */
+  private function generateResult($evaluate)
+  {
+    // Build operand:
+    if ($evaluate) {
+      // Ignore non-set variables by replacing them with an empty string:
+      try {
+        $op = $this->leftOperand->evaluate(false);
+      } catch (CTE_Engine_Template_VariableNotFoundException $e) {
+        // Set operator to empty value:
+        $op = '';
+      }
+    } else {
+      $op = $this->leftOperand->compile();
+    }
+    
+    // If we're a php function alias:
+    if ($this->isPhpBuiltIn()) {
+      
+      $result = $this->mapPhpFunc($evaluate);
+      $result = str_replace('$', $op, $result);
+      
+      // Evaluate if that's what we want:
+      if ($evaluate) {
+        $evalCode = "return $result;";
+      
+        // Evaluate result:
+        $result = @eval($evalCode);
+      
+        // Check that everything went ok:
+        if ($result === false) {
+          throw new CTE_Engine_Expression_Exception(
+            "eval() of '$evalCode' failed"
+          );
+        }
+      }
+      
+      return $result;
+    // Otherwise we're a modifier plugin:
+    } else {
+      $args = array();
+      for ($i=0, $ii=count($this->args); $i<$ii; $i++) {
+        $args[$i] = ($evaluate) ?
+          $this->args[$i]->evaluate(false) :
+          $this->args[$i]->compile(true);
+      }
+    }
+    
+    $pluginManager = CTE_Engine_Environment::
+      getInstance()->
+      getPluginManager();
+    
+    return ($evaluate) ?
+      $pluginManager->modExec($this->modName, $op, $args) :
+      $pluginManager->modCompile($this->modName, $op, $args);
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Evaluable_Interface::evaluate()
+   */
+  public function evaluate($inline)
+  {
+    return $this->generateResult(true);
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Evaluable_Interface::isStatic()
+   */
+  public function isStatic()
+  {
+    $this->integrate();
+    return $this->leftOperand->isStatic();
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Compilable_Interface::compile()
+   */
+  public function compile($concatContext = false)
+  {
+    return $this->assemble($this->generateResult(false));
+  }
+}
+?>

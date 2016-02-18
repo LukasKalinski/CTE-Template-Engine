@@ -1,0 +1,25 @@
+<?php include_once('CTE/Plugin/Default.php');?>
+<?php $this->v_plugin['default']=new CTE_Plugin_Default();?>
+
+
+<?php echo $this->v_initial['otherFruit']->friends['peter'];?>
+
+<?php echo $this->v_initial['foo'][$this->v_initial['magicKey']]['message'];?>
+
+<?php echo $this->v_initial['foo'][$this->v_initial['magicKey']];?>
+
+<?php echo $this->v_initial['fruit']->color;?>
+
+<?php echo $this->v_initial['fruit']->slice(4);?>
+
+<?php echo $this->v_initial['foo']['bar'];?>
+
+<?php echo $this->v_initial['foo']['bar']['message'];?>
+
+77
+
+<?php echo time()+(77*10);?>
+
+<?php echo strtoupper($this->v_initial['user']);?>
+
+<?php echo $this->v_plugin['default']->apply(strtoupper($this->v_initial['user']),array('N/A'));?>

@@ -1,0 +1,20 @@
+<?php if(isset($this->v_initial['persons'])&&is_array($this->v_initial['persons'])&&($s2size=count($this->v_initial['persons']))>0){for($s2i=0,$s2it=1;$s2i<$s2size;$s2i++,$s2it++){?>
+Name: <?php echo $this->v_initial['persons'][$this->v_section[1]['p']['index']]['name'];?>
+Age: <?php echo $this->v_initial['persons'][$this->v_section[1]['p']['index']]['age'];?>
+<?php }}?>
+
+<?php if(isset($this->v_initial['persons'])&&is_array($this->v_initial['persons'])&&($s3size=count($this->v_initial['persons']))>0){for($s3i=0,$s3it=1;$s3i<$s3size;$s3i++,$s3it++){?>
+<?php }}else{?>
+<?php }?>
+
+<?php if(isset($this->v_initial['persons'])&&is_array($this->v_initial['persons'])&&($s4size=count($this->v_initial['persons']))>0){for($s4i=1,$s4it=1;$s4i<$s4size;$s4i++,$s4it++){?>
+<?php }}?>
+
+<?php if(isset($this->v_initial['persons'])&&is_array($this->v_initial['persons'])&&($s5size=count($this->v_initial['persons']))>0){$s5max=min($s5size,5);for($s5i=1,$s5it=1;$s5i<$s5max;$s5i++,$s5it++){?>
+<?php }}?>
+
+<?php if(isset($this->v_initial['persons'])&&is_array($this->v_initial['persons'])&&($s6size=count($this->v_initial['persons']))>0){$s6max=min($s6size,5);for($s6i=1,$s6it=1;$s6i<$s6max;$s6i+=2,$s6it++){?>
+<?php }}?>
+
+<?php if(isset($this->v_initial['persons'])&&is_array($this->v_initial['persons'])&&($this->v_section[1]['p']['size']=count($this->v_initial['persons']))>0){$this->v_section[1]['p']['first']=true;$this->v_section[1]['p']['last']=false;for($this->v_section[1]['p']['index']=0,$this->v_section[1]['p']['iteration']=1;$this->v_section[1]['p']['index']<$this->v_section[1]['p']['size'];$this->v_section[1]['p']['index']++,$this->v_section[1]['p']['iteration']++){if($this->v_section[1]['p']['iteration']==2){$this->v_section[1]['p']['first']=false;}if($this->v_section[1]['p']['iteration']==$s7max){$this->v_section[1]['p']['last']=true;}?>
+<?php }}?>

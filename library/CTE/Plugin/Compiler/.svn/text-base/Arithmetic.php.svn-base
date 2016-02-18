@@ -1,0 +1,202 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_Engine_Expression
+ * @since 2006-08-29
+ * @version 2007-02-10
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+require_once('Context/Integrator/Abstract.php');
+
+/**
+ * @access private
+ */
+class CTE_Engine_Expression_Arithmetic
+  extends CTE_Engine_Expression_Context_Integrator_Abstract
+    implements CTE_Engine_Expression_Compilable_Interface,
+               CTE_Engine_Expression_Evaluable_Interface
+{
+  /**
+   * @var array
+   */
+  private static $operators = array(
+    '+' => '+',
+    '-' => '-',
+    '*' => '*',
+    '/' => '/',
+    '%' => '%',
+    'mod' => '%'
+  );
+
+  /**
+   * @var aArray
+   */
+  private static $allowedOperands = array(
+    'CTE_Engine_Expression_Variable' => true,
+    'CTE_Engine_Expression_Arithmetic' => true,
+    'CTE_Engine_Expression_Literal_Numeric' => true
+  );
+
+  /**
+   * @var bool
+   */
+  private $validated = false;
+
+  /**
+   * @var string
+   */
+  private $operator;
+
+  /**
+   * @see CTE_Engine_Expression_Abstract::requestInstance()
+   */
+  public static function requestInstance(CTE_Engine_Parser_Tag $tagParser)
+  {
+    if (isset(self::$operators[$tagParser->currentToken()])) {
+      return new self($tagParser);
+    }
+
+    return null;
+  }
+
+  /**
+   * @param CTE_Engine_Parser_Tag $tagParser
+   */
+  private function __construct(CTE_Engine_Parser_Tag $tagParser)
+  {
+    $this->setLineNum($tagParser->getTemplateLineNum());
+    $this->operator = self::$operators[$tagParser->currentToken()];
+    $tagParser->nextToken();
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Context_Validator_Interface::validate()
+   */
+  protected function validate()
+  {
+    if ($this->validated) {
+      return;
+    }
+    
+    $leftClass = get_class($this->getLeftNeighbor());
+    $rightClass = get_class($this->getRightNeighbor());
+    
+    if (!isset(self::$allowedOperands[$leftClass])) {
+      $errMsg = 'invalid left operand: ' . get_class($this->getLeftNeighbor());
+    } else if (!isset(self::$allowedOperands[$rightClass])) {
+      $errMsg = 'invalid right operand: ' . get_class($this->getRightNeighbor());
+    }
+    
+    if (isset($errMsg)) {
+      throw new CTE_Engine_Template_Contextual_Exception($this, $errMsg);
+    }
+    
+    $this->validated = true;
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Context_Integrator_Interface::
+   *      integrationPriority()
+   */
+  public function integrationPriority()
+  {
+    return CTE_Engine_Expression_Context_Integrator_Interface::
+           PRIORITY_ARITHMETIC;
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Context_Integrator_Interface::integrate()
+   */
+  public function integrate()
+  {
+    parent::integrate();
+    $this->validate();
+    $this->vacuumLeft();
+    $this->vacuumRight();
+    $this->finalizeIntegration();
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Abstract::getName()
+   */
+  public function getName()
+  {
+    return 'arithmetic expression';
+  }
+
+  /**
+   *
+   * @return
+   */
+  public function getEvalStr()
+  {
+    $evalCode = '';
+    
+    if (!$this->leftOperand instanceof self) {
+      $evalCode.= implode($this->leftOperand->detachLeftComponents())
+                . $this->leftOperand->evaluate(true)
+                . implode($this->leftOperand->detachRightComponents());
+    } else {
+      $evalCode .= $this->leftOperand->getEvalStr();
+    }
+    
+    $evalCode.= $this->operator;
+    
+    if (!$this->rightOperand instanceof self) {
+      $evalCode.= implode($this->rightOperand->detachLeftComponents())
+                . $this->rightOperand->evaluate(true)
+                . implode($this->rightOperand->detachRightComponents());
+    } else {
+      $evalCode .= $this->rightOperand->getEvalStr();
+    }
+    
+    return $evalCode;
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Evaluable_Interface::evaluate()
+   * @throws CTE_Engine_Template_Contextual_Exception
+   */
+  public function evaluate($inline)
+  {
+    $evalCode = $this->getEvalStr();
+    
+    $evalCode = "return $evalCode;";
+    
+    // Evaluate result:
+    $result = @eval($evalCode);
+    
+    // Check that everything went ok:
+    if ($result === false) {
+      throw new CTE_Engine_Expression_Exception("eval() of '$evalCode' failed");
+    }
+    
+    return $result;
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Evaluable_Interface::isStatic()
+   */
+  public function isStatic()
+  {
+    return ($this->leftOperand->isStatic() && $this->rightOperand->isStatic());
+  }
+  
+  /**
+   * @see CTE_Engine_Expression_Compilable_Interface::compile()
+   */
+  public function compile($concatContext = false)
+  {
+    $result = $this->assemble(
+      $this->leftOperand->compile($concatContext) .
+      $this->operator .
+      $this->rightOperand->compile($concatContext)
+    );
+    
+    return $result;
+  }
+}
+?>

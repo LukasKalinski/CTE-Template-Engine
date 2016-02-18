@@ -1,0 +1,219 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_Engine
+ * @since 2006-08-29
+ * @version 2007-02-07
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+/**
+ * @access private
+ */
+class CTE_Engine_VariableRegistry
+{
+  /**
+   * The system variable name. This will usually be 'cte', see CTE_Config for
+   * further info.
+   * 
+   * @var string
+   */
+  private static $sysVarName;
+  
+  /**
+   * Current/Active scope
+   *
+   * @var int
+   */
+  private $currentScope = 0;
+  
+  /**
+   * @var & aArray
+   */
+  private $initVars;
+
+  /**
+   * Expression Alias Variables
+   * 
+   * An alias variable is a subtemplate's "imported variable". Instead of
+   * redeclaring or introducing new variables as going from one scope to
+   * another, we're simply setting aliases which give us access to the
+   * original expression object. Then the subtemplate's variable expression
+   * objects have to look for this alias and use it if it exists.
+   * 
+   * Concept:
+   * - We're going from main template to the subtemplate foo.tpl.
+   * - In the main template we want to delegate the ParseableString
+   *   "Welcome to {$page}!" to foo.tpl. This is done by aliasing it
+   *   to 'welcome' (without the $ prefix).
+   * - In foo.tpl we then have the following tag: {$welcome}. The variable
+   *   expression object will then try to extract an alias from the
+   *   variables basename.
+   * - The result will be that the variable expression object for foo.tpl
+   *   will use the aliased object to compile the variable's basename.
+   * 
+   * Forbidden alias names:
+   * - cte
+   * 
+   * Aliases for the following expression types:
+   * - Variables
+   * - Resources
+   * - Strings
+   * - ParseableStrings
+   * 
+   * @var aArray
+   */
+  private $aliases = array();
+
+  /**
+   * Variable Registry Constructor
+   * 
+   * @param array $initialVars
+   * @param CTE_Config $config
+   */
+  public function __construct(array &$initialVars, CTE_Config $config)
+  {
+    if (!isset(self::$sysVarName)) {
+      self::$sysVarName = $config->getTplVarNameSys();
+    }
+    
+    $this->initVars = &$initialVars;
+  }
+
+  /**
+   * Creates a new template scope.
+   * 
+   * @return int The new scope level.
+   */
+  public function createScope()
+  {
+    $this->currentScope++;
+    return $this->currentScope;
+  }
+
+  /**
+   * Drops current template scope. Since our structure is inspired by stacks, 
+   * the argument $currentScope must be equal to the currently active scope
+   * (to make sure the scope drop is triggered by an object that knows 
+   * something about the scope).
+   * 
+   * @param int $currentScope
+   * @throws CTE_Engine_Exception if trying to drop the lowest scope (0).
+   * @throws CTE_Engine_Exception if the requested scope to drop isn't current.
+   * @return void
+   */
+  public function dropScope($currentScope)
+  {
+    // Make sure that the requested scope to drop is the current one:
+    if ($currentScope != $this->currentScope) {
+      throw new CTE_Engine_Exception('invalid scope');
+    }
+
+    // Make sure we're not dropping the lowest scope:
+    if ($this->currentScope == 0) {
+      throw new CTE_Engine_Exception('cannot drop main scope');
+    }
+    
+    $this->currentScope--;
+  }
+
+  /**
+   * Returns true if $baseName exists in initial vars.
+   * 
+   * @param string $baseName
+   * @return bool
+   */
+  public function varExists($baseName)
+  {
+    return isset($this->initVars[$baseName]);
+  }
+  
+  /**
+   * Returns a reference to the key $baseName in $this->initVars. A reference
+   * is chosen in purpose to save memory in case of big nested arrays/objects.
+   * 
+   * @param string $baseName
+   * @throws CTE_Engine_Exception if $baseName doesn't exist.
+   * @return mixed
+   */
+  public function & getVarRef($baseName)
+  {
+    if (!$this->varExists($baseName)) {
+      throw new CTE_Engine_Exception('variable basename not found');
+    }
+    
+    return $this->initVars[$baseName];
+  }
+  
+  /**
+   * Sets an alias for an Expression_Abstract-object and makes it available in
+   * current scope. The alias represents the variable's basename only, i.e.
+   * $foo, not $foo.bar or $foo[bar].
+   * 
+   * Example:
+   * If we want to delegate a ParseableString from a template to its
+   * subtemplate, then we're aliasing it to, say "foo". The variable expression
+   * handler will then call the aliased object's compile method, instead of
+   * doing its own compilation. Any keys or instance accesses on that variable
+   * expression will we appended onto the aliased expression though.
+   * 
+   * @param string $alias
+   * @param CTE_Engine_Expression_Abstract $target
+   * @throws CTE_Engine_Exception if $alias is in conflict with the system
+   *         variable name.
+   * @return void
+   */
+  public function associate(CTE_Engine_Expression_Abstract $target, $alias)
+  {
+    // Make sure the alias won't override system var:
+    if ($alias == self::$sysVarName) {
+      throw new CTE_Engine_Exception(
+        "system variable name must not be overridden, invalid alias: //$alias//"
+      );
+    }
+    
+    $this->aliases[$this->currentScope][$alias] = $target;
+  }
+
+  /**
+   * Tells whether an expression is associated or not.
+   * 
+   * @param CTE_Engine_Expression_Abstract $target
+   * @return bool
+   */
+  public function isAssociated(CTE_Engine_Expression_Abstract $target)
+  {
+    return isset($this->aliases[$this->currentScope]) &&
+           in_array($target, $this->aliases[$this->currentScope]);
+  }
+  
+  /**
+   * Returns CTE_Engine_Expression_Abstract object associated with $alias, if
+   * an association exists, otherwise null will be returned. Note that we have
+   * to be in the same scope as the association to resolve it.
+   * 
+   * @param string $alias
+   * @return CTE_Engine_Expression_Abstract if resolving succeeds.
+   * @return null if resolving fails.
+   */
+  public function resolveAssociation($alias)
+  {
+    return (isset($this->aliases[$this->currentScope][$alias]) ?
+            $this->aliases[$this->currentScope][$alias] :
+            null);
+  }
+  
+  /**
+   * Removes variable association aliased with $alias.
+   * 
+   * @param string $alias
+   * @return void
+   */
+  public function removeAssociation($alias)
+  {
+    unset($this->aliases[$this->currentScope][$alias]);
+  }
+}
+?>

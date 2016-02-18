@@ -1,0 +1,229 @@
+<?php
+/**
+ *
+ *
+ * @package CTE_Engine_Expression
+ * @since 2006-08-10
+ * @version 2007-01-22
+ * @copyright Cylab 2006-2007
+ * @author Lukas Kalinski
+ */
+
+require_once('Context/Integrator/Abstract.php');
+
+/**
+ * @access private
+ */
+class CTE_Engine_Expression_Comparison
+  extends CTE_Engine_Expression_Context_Integrator_Abstract
+    implements CTE_Engine_Expression_Compilable_Interface
+{
+  /**
+   * Available comparison operators.
+   *
+   * @var array
+   */
+  private static $operators = array(
+    /**
+     * PHP-like ...
+     */
+    '===' => array('==='),
+    '!==' => array('!=='),
+    '==' => array('=='),
+    '!=' => array('!='),
+    
+    /**
+     * Smarty-like ...
+     */
+    'neq' => array('!='),
+    'ne' => array('!='),
+    '>' => array('>'),
+    'gt' => array('>'),
+    '<' => array('<'),
+    'lt' => array('<'),
+    '>=' => array('>='),
+    'ge' => array('>='),
+    'gte' => array('>='),
+    '<=' => array('<='),
+    'le' => array('<='),
+    'lte' => array('<='),
+    'eq' => array('=='),
+    
+    /**
+     * English-like (short version) ...
+     */
+    'equals' => array('=='),
+    'less' => array(
+      'than' => array(
+        '<',
+        'or' => array(
+          'equals' => array('<=')
+        )
+      )
+    ),
+    'greater' => array(
+      'than' => array(
+        '>',
+        'or' => array(
+          'equals' => array('>=')
+        )
+      )
+    ),
+    'not' => array(
+      'equals' => array('!=')
+    ),
+    
+    /**
+     * English-like (long version) ...
+     */
+    'is' => array(
+      'equal' => array(
+        'to' => array('==')
+      ),
+      'less' => array(
+        'than' => array(
+          '<',
+          'or' => array(
+            'equal' => array(
+              'to' => array('<=')
+            )
+          )
+        )
+      ),
+      'greater' => array(
+        'than' => array(
+          '>',
+          'or' => array(
+            'equal'  => array(
+              'to' => array('>=')
+            )
+          ),
+        )
+      ),
+      'not' => array(
+        'equal' => array(
+          'to' => array('!=')
+        )
+      )
+    )
+  );
+
+  /**
+   * @var string[]
+   */
+  private static $allowedOperands = array(
+    'CTE_Engine_Expression_Variable' => true,
+    'CTE_Engine_Expression_Modifier' => true,
+    'CTE_Engine_Expression_Literal_Numeric' => true,
+    'CTE_Engine_Expression_Function' => true,
+    'CTE_Engine_Expression_Arithmetic' => true,
+    'CTE_Engine_Expression_Literal_String' => true,
+    'CTE_Engine_Expression_Literal_Bool' => true,
+    'CTE_Engine_Expression_Literal_ParseableString' => true
+  );
+
+  /**
+   * @var bool
+   */
+  private $validated = false;
+
+  /**
+   * @var string
+   */
+  private $operator;
+
+  /**
+   * @see CTE_Engine_Expression_Abstract::requestInstance()
+   */
+  public static function requestInstance(CTE_Engine_Parser_Tag $tagParser)
+  {
+    $line_no = $tagParser->getTemplateLineNum();
+    
+    if (($phpOp = $tagParser->mapAssoc(self::$operators)) != null) {
+      return new self($phpOp, $line_no);
+    }
+
+    return null;
+  }
+
+  /**
+   * @param string $phpOperator
+   * @param int $line_no
+   */
+  private function __construct($phpOperator, $line_no)
+  {
+    $this->setLineNum($line_no);
+    $this->operator = $phpOperator;
+  }
+
+  /**
+   * Validates operands.
+   * 
+   * @throws CTE_Engine_Template_Contextual_Exception
+   * @return void
+   */
+  private function validate()
+  {
+    if ($this->validated) {
+      return;
+    }
+    
+    $leftClass = get_class($this->getLeftNeighbor());
+    $rightClass = get_class($this->getRightNeighbor());
+    
+    if (!isset(self::$allowedOperands[$leftClass])) {
+      $errMsg = "invalid left operand for {$this->operator} operator";
+    } else if (!isset(self::$allowedOperands[$rightClass])) {
+      $errMsg = "invalid right operand for {$this->operator} operator";
+    }
+    
+    if (isset($errMsg)) {
+      throw new CTE_Engine_Template_Contextual_Exception($this, $errMsg);
+    }
+
+    $this->validated = true;
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Context_Integrator_Interface::
+   *      integrationPriority()
+   */
+  public function integrationPriority()
+  {
+    return CTE_Engine_Expression_Context_Integrator_Interface::PRIORITY_COMPARE;
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Context_Integrator_Interface::integrate()
+   */
+  public function integrate()
+  {
+    parent::integrate();
+    
+    $this->validate();
+    $this->vacuumLeft();
+    $this->vacuumRight();
+    $this->finalizeIntegration();
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Abstract::getName()
+   */
+  public function getName()
+  {
+    return 'comparison expression';
+  }
+
+  /**
+   * @see CTE_Engine_Expression_Compilable_Interface::compile()
+   */
+  public function compile($concatContext = false)
+  {
+    return $this->assemble(
+             $this->leftOperand->compile() .
+             $this->operator .
+             $this->rightOperand->compile()
+           );
+  }
+}
+?>
